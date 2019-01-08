@@ -26,9 +26,9 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/pd/client"
 	log "github.com/sirupsen/logrus"
-	"github.com/tikv/client-go/codec"
-	"github.com/tikv/client-go/metrics"
-	"github.com/tikv/client-go/retry"
+	"github.com/kjzz/client-go/codec"
+	"github.com/kjzz/client-go/metrics"
+	"github.com/kjzz/client-go/retry"
 )
 
 const (

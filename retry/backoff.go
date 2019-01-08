@@ -22,7 +22,7 @@ import (
 
 	"github.com/pingcap/errors"
 	log "github.com/sirupsen/logrus"
-	"github.com/tikv/client-go/metrics"
+	"github.com/kjzz/client-go/metrics"
 )
 
 const (

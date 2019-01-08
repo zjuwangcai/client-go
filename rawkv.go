@@ -21,11 +21,11 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/pd/client"
-	"github.com/tikv/client-go/config"
-	"github.com/tikv/client-go/locate"
-	"github.com/tikv/client-go/metrics"
-	"github.com/tikv/client-go/retry"
-	"github.com/tikv/client-go/rpc"
+	"github.com/kjzz/client-go/config"
+	"github.com/kjzz/client-go/locate"
+	"github.com/kjzz/client-go/metrics"
+	"github.com/kjzz/client-go/retry"
+	"github.com/kjzz/client-go/rpc"
 )
 
 var (

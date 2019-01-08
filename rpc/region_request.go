@@ -20,9 +20,9 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	log "github.com/sirupsen/logrus"
-	"github.com/tikv/client-go/locate"
-	"github.com/tikv/client-go/metrics"
-	"github.com/tikv/client-go/retry"
+	"github.com/kjzz/client-go/locate"
+	"github.com/kjzz/client-go/metrics"
+	"github.com/kjzz/client-go/retry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
