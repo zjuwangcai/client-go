@@ -17,12 +17,12 @@ import (
 	"context"
 	"time"
 
-	"github.com/pingcap/errors"
-	"github.com/pingcap/kvproto/pkg/errorpb"
-	log "github.com/sirupsen/logrus"
 	"github.com/kjzz/client-go/locate"
 	"github.com/kjzz/client-go/metrics"
 	"github.com/kjzz/client-go/retry"
+	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/errorpb"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )

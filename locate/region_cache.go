@@ -21,14 +21,14 @@ import (
 	"time"
 
 	"github.com/google/btree"
+	"github.com/kjzz/client-go/codec"
+	"github.com/kjzz/client-go/metrics"
+	"github.com/kjzz/client-go/retry"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/pd/client"
 	log "github.com/sirupsen/logrus"
-	"github.com/kjzz/client-go/codec"
-	"github.com/kjzz/client-go/metrics"
-	"github.com/kjzz/client-go/retry"
 )
 
 const (

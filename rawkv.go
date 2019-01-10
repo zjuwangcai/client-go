@@ -18,14 +18,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/pingcap/errors"
-	"github.com/pingcap/kvproto/pkg/kvrpcpb"
-	"github.com/pingcap/pd/client"
 	"github.com/kjzz/client-go/config"
 	"github.com/kjzz/client-go/locate"
 	"github.com/kjzz/client-go/metrics"
 	"github.com/kjzz/client-go/retry"
 	"github.com/kjzz/client-go/rpc"
+	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/pd/client"
 )
 
 var (
@@ -39,8 +39,30 @@ const (
 	// rawBatchPutSize is the maximum size limit for rawkv each batch put request.
 	rawBatchPutSize = 16 * 1024
 	// rawBatchPairCount is the maximum limit for rawkv each batch get/delete request.
-	rawBatchPairCount = 512
-	rawkvMaxBackoff   = 20000
+	rawBatchPairCount     = 512
+	rawkvMaxBackoff       = 20000
+	scannerNextMaxBackoff = 20000
+)
+
+const (
+	scanBatchSize = 256
+	batchGetSize  = 5120
+)
+
+const physicalShiftBits = 18
+const txnStartKey = "_txn_start_key"
+
+// Timeout durations.
+const (
+	dialTimeout               = 5 * time.Second
+	readTimeoutShort          = 20 * time.Second  // For requests that read/write several key-values.
+	ReadTimeoutMedium         = 60 * time.Second  // For requests that may need scan region.
+	ReadTimeoutLong           = 150 * time.Second // For requests that may need scan region multiple times.
+	GCTimeout                 = 5 * time.Minute
+	UnsafeDestroyRangeTimeout = 5 * time.Minute
+
+	grpcInitialWindowSize     = 1 << 30
+	grpcInitialConnWindowSize = 1 << 30
 )
 
 // RawKVClient is a client of TiKV server which is used as a key-value storage,
@@ -617,4 +639,188 @@ type batch struct {
 type singleBatchResp struct {
 	resp *rpc.Response
 	err  error
+}
+
+type Iterator struct {
+	batchSize    int
+	version      uint64
+	valid        bool
+	cache        []*kvrpcpb.KvPair
+	idx          int
+	nextStartKey []byte
+	startKey     []byte
+	endKey       []byte
+	eof          bool
+	client       *RawKVClient
+	err          error
+}
+
+func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient) (*Iterator, error) {
+	// It must be > 1. Otherwise scanner won't skipFirst.
+	if batchSize <= 1 {
+		batchSize = scanBatchSize
+	}
+	verison, err := client.getTimestamp(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	iterator := &Iterator{
+		batchSize:    batchSize,
+		valid:        true,
+		nextStartKey: startKey,
+		endKey:       endKey,
+		client:       client,
+		version:      verison,
+		startKey:     startKey,
+	}
+	bool := iterator.Next()
+	if bool {
+		return iterator, nil
+	}
+	return iterator, errors.New("failed to init iterator")
+
+}
+
+func (it *Iterator) Key() []byte {
+	if it.valid {
+		return it.cache[it.idx].Key
+	}
+	return nil
+}
+
+func (it *Iterator) Value() []byte {
+	if it.valid {
+		return it.cache[it.idx].Value
+	}
+	return nil
+}
+
+func (it *Iterator) Seek(key []byte) bool {
+	//TODO finish it
+	return true
+}
+
+func (it *Iterator) Next() bool {
+	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
+	if !it.valid {
+		return false
+	}
+	for {
+		it.idx++
+		if it.idx >= len(it.cache) {
+			if it.eof {
+				it.Release()
+				return true
+			}
+			err := it.getData(bo)
+			if err != nil {
+				it.Release()
+				return false
+			}
+			if it.idx >= len(it.cache) {
+				continue
+			}
+		}
+
+		current := it.cache[it.idx]
+		if len(it.endKey) > 0 && Key(current.Key).Cmp(Key(it.endKey)) >= 0 {
+			it.eof = true
+			it.Release()
+			return true
+		}
+		// Try to resolve the lock
+		if current.GetError() != nil {
+			return false
+		}
+		return true
+	}
+}
+
+func (it *Iterator) Prev() bool {
+	//TODO prefect it
+	if it.idx <= 0 {
+		return false
+	}
+	it.idx--
+	return true
+}
+
+func (i *Iterator) Error() error {
+	return i.err
+}
+
+func (i *Iterator) Release() {
+	i.valid = false
+}
+
+func (i *Iterator) getData(bo *retry.Backoffer) error {
+	sender := rpc.NewRegionRequestSender(i.client.regionCache, i.client.rpcClient)
+	for {
+		loc, err := i.client.regionCache.LocateKey(bo, i.nextStartKey)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		req := &rpc.Request{
+			Type: rpc.CmdRawScan,
+			Scan: &kvrpcpb.ScanRequest{
+				StartKey: i.nextStartKey,
+				EndKey:   i.endKey,
+				Version:  i.version,
+				Limit:    uint32(i.batchSize),
+			},
+		}
+		resp, err := sender.SendReq(bo, req, loc.Region, ReadTimeoutMedium)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		regionErr, err := resp.GetRegionError()
+		if err != nil {
+			return errors.Trace(err)
+		}
+		if regionErr != nil {
+			err = bo.Backoff(retry.BoRegionMiss, errors.New(regionErr.String()))
+			if err != nil {
+				return errors.Trace(err)
+			}
+			continue
+		}
+		cmdScanResp := resp.Scan
+		if cmdScanResp == nil {
+			return errors.Trace(ErrBodyMissing)
+		}
+
+		kvPairs := cmdScanResp.Pairs
+		i.cache, i.idx = kvPairs, 0
+
+		if len(kvPairs) < i.batchSize {
+			// No more data in current Region. Next getData() starts
+			// from current Region's endKey.
+			i.nextStartKey = loc.EndKey
+			if len(loc.EndKey) == 0 || (len(i.endKey) > 0 && Key(i.nextStartKey).Cmp(Key(i.endKey)) >= 0) {
+				// Current Region is the last one.
+				i.eof = true
+			}
+			return nil
+		}
+		// next getData() starts from the last key in kvPairs (but skip
+		// it by appending a '\x00' to the key). Note that next getData()
+		// may get an empty response if the Region in fact does not have
+		// more data.
+		lastKey := kvPairs[len(kvPairs)-1].GetKey()
+		i.nextStartKey = Key(lastKey).Next()
+		return nil
+	}
+
+}
+
+func (c *RawKVClient) getTimestamp(ctx context.Context) (uint64, error) {
+	physical, logical, err := c.pdClient.GetTS(ctx)
+	if err != nil {
+		return 0, errors.Trace(err)
+	}
+	return ComposeTS(physical, logical), nil
+}
+
+func ComposeTS(physical, logical int64) uint64 {
+	return uint64((physical << physicalShiftBits) + logical)
 }
