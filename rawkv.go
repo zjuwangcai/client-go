@@ -28,6 +28,8 @@ import (
 	"github.com/pingcap/pd/client"
 )
 
+var ErrInitIterator = errors.New("failed to init iterator")
+
 var (
 	// MaxRawKVScanLimit is the maximum scan limit for rawkv Scan.
 	MaxRawKVScanLimit = 10240
@@ -653,16 +655,20 @@ type Iterator struct {
 	eof          bool
 	client       *RawKVClient
 	err          error
+	startKeys    [][]byte
 }
 
-func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient) (*Iterator, error) {
+func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient,version uint64) (*Iterator, error) {
 	// It must be > 1. Otherwise scanner won't skipFirst.
 	if batchSize <= 1 {
 		batchSize = scanBatchSize
 	}
-	verison, err := client.getTimestamp(context.Background())
-	if err != nil {
-		return nil, err
+	if version == 0 {
+		ver, err := client.getTimestamp(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		version = ver
 	}
 	iterator := &Iterator{
 		batchSize:    batchSize,
@@ -670,14 +676,14 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient) (*
 		nextStartKey: startKey,
 		endKey:       endKey,
 		client:       client,
-		version:      verison,
+		version:      version,
 		startKey:     startKey,
 	}
 	bool := iterator.Next()
 	if bool {
 		return iterator, nil
 	}
-	return iterator, errors.New("failed to init iterator")
+	return iterator, ErrInitIterator
 
 }
 
@@ -696,7 +702,15 @@ func (it *Iterator) Value() []byte {
 }
 
 func (it *Iterator) Seek(key []byte) bool {
-	//TODO finish it
+	//TODO to check it
+	iter,err := NewIterator(key,it.endKey,0,it.client,it.version)
+	if err != nil {
+		return false
+	}
+	it.idx = iter.idx
+	it.cache = iter.cache
+	it.nextStartKey = iter.nextStartKey
+	it.err = iter.err
 	return true
 }
 
@@ -736,12 +750,31 @@ func (it *Iterator) Next() bool {
 	}
 }
 
+//TODO check it
 func (it *Iterator) Prev() bool {
-	//TODO prefect it
-	if it.idx <= 0 {
+	if bytes.Compare(it.startKeys[0],it.Key())==0 {
 		return false
 	}
-	it.idx--
+	if it.idx > 0 {
+		it.idx--
+	} else {
+		i := 0
+		for i = 1 ;i<len(it.startKeys);i++ {
+			if bytes.Compare(it.Key(),it.startKeys[i]) == 0 {
+				it.nextStartKey = it.startKeys[i-1]
+				break
+			}
+		}
+		if i == len(it.startKeys) {
+			return false
+		}
+		bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
+		err := it.getData(bo)
+		if err != nil {
+			return false
+		}
+		it.idx = len(it.cache) - 1
+	}
 	return true
 }
 
@@ -791,6 +824,8 @@ func (i *Iterator) getData(bo *retry.Backoffer) error {
 
 		kvPairs := cmdScanResp.Pairs
 		i.cache, i.idx = kvPairs, 0
+
+		i.startKeys = append(i.startKeys,i.nextStartKey)
 
 		if len(kvPairs) < i.batchSize {
 			// No more data in current Region. Next getData() starts
