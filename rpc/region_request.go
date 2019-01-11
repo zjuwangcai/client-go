@@ -23,8 +23,8 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // RegionRequestSender sends KV/Cop requests to tikv server. It handles network
@@ -141,7 +141,11 @@ func (s *RegionRequestSender) onSendFail(bo *retry.Backoffer, ctx *locate.RPCCon
 	if errors.Cause(err) == context.Canceled {
 		return errors.Trace(err)
 	}
-	if grpc.Code(errors.Cause(err)) == codes.Canceled {
+	code := codes.Unknown
+	if s, ok := status.FromError(errors.Cause(err)); ok {
+		code = s.Code()
+	}
+	if code == codes.Canceled {
 		select {
 		case <-bo.GetContext().Done():
 			return errors.Trace(err)
