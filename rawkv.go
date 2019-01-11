@@ -658,7 +658,7 @@ type Iterator struct {
 	startKeys    [][]byte
 }
 
-func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient,version uint64) (*Iterator, error) {
+func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, version uint64) (*Iterator, error) {
 	// It must be > 1. Otherwise scanner won't skipFirst.
 	if batchSize <= 1 {
 		batchSize = scanBatchSize
@@ -678,15 +678,15 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient,ver
 		endKey:       endKey,
 		client:       client,
 		version:      version,
-		eof:false,
+		eof:          false,
 	}
 
 	// 循环获取startKeys
 	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, iterator.version), scannerNextMaxBackoff)
 	for {
-		err := iterator.getData(bo)
+		err := iterator.getData(bo, true)
 		if err != nil {
-			return nil,err
+			return nil, err
 		}
 		if iterator.eof {
 			break
@@ -729,7 +729,7 @@ func (it *Iterator) Seek(key []byte) bool {
 	//TODO to check it
 	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
 	it.nextStartKey = key
-	err := it.getData(bo)
+	err := it.getData(bo, false)
 	if err != nil {
 		return false
 	}
@@ -748,7 +748,7 @@ func (it *Iterator) Next() bool {
 				it.Release()
 				return true
 			}
-			err := it.getData(bo)
+			err := it.getData(bo, false)
 			if err != nil {
 				it.Release()
 				return false
@@ -774,15 +774,15 @@ func (it *Iterator) Next() bool {
 
 //TODO check it
 func (it *Iterator) Prev() bool {
-	if bytes.Compare(it.startKeys[0],it.Key())==0 {
+	if bytes.Compare(it.startKeys[0], it.Key()) == 0 {
 		return false
 	}
 	if it.idx > 0 {
 		it.idx--
 	} else {
 		i := 0
-		for i = 1 ;i<len(it.startKeys);i++ {
-			if bytes.Compare(it.Key(),it.startKeys[i]) == 0 {
+		for i = 1; i < len(it.startKeys); i++ {
+			if bytes.Compare(it.Key(), it.startKeys[i]) == 0 {
 				it.nextStartKey = it.startKeys[i-1]
 				break
 			}
@@ -791,7 +791,7 @@ func (it *Iterator) Prev() bool {
 			return false
 		}
 		bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
-		err := it.getData(bo)
+		err := it.getData(bo, false)
 		if err != nil {
 			return false
 		}
@@ -808,7 +808,7 @@ func (i *Iterator) Release() {
 	i.valid = false
 }
 
-func (i *Iterator) getData(bo *retry.Backoffer) error {
+func (i *Iterator) getData(bo *retry.Backoffer, init bool) error {
 	sender := rpc.NewRegionRequestSender(i.client.regionCache, i.client.rpcClient)
 	for {
 		loc, err := i.client.regionCache.LocateKey(bo, i.nextStartKey)
@@ -817,11 +817,11 @@ func (i *Iterator) getData(bo *retry.Backoffer) error {
 		}
 		req := &rpc.Request{
 			Type: rpc.CmdRawScan,
-			Scan: &kvrpcpb.ScanRequest{
+			RawScan: &kvrpcpb.RawScanRequest{
 				StartKey: i.nextStartKey,
 				EndKey:   i.endKey,
-				Version:  i.version,
-				Limit:    uint32(i.batchSize),
+				//Version:  i.version,
+				Limit: uint32(i.batchSize),
 			},
 		}
 		resp, err := sender.SendReq(bo, req, loc.Region, ReadTimeoutMedium)
@@ -839,17 +839,18 @@ func (i *Iterator) getData(bo *retry.Backoffer) error {
 			}
 			continue
 		}
-		cmdScanResp := resp.Scan
+		cmdScanResp := resp.RawScan
 		if cmdScanResp == nil {
 			return errors.Trace(ErrBodyMissing)
 		}
 
-		kvPairs := cmdScanResp.Pairs
-		i.cache, i.idx = cmdScanResp.Pairs, 0
+		kvPairs := cmdScanResp.Kvs
+		i.cache, i.idx = cmdScanResp.Kvs, 0
 
-		//初始化时获取所有分组
-		//i.startKeys = append(i.startKeys,i.nextStartKey)
-
+		if init {
+			//初始化时获取所有分组
+			i.startKeys = append(i.startKeys, i.nextStartKey)
+		}
 		if len(kvPairs) < i.batchSize {
 			// No more data in current Region. Next getData() starts
 			// from current Region's endKey.
