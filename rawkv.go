@@ -674,11 +674,35 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient,ver
 		batchSize:    batchSize,
 		valid:        true,
 		nextStartKey: startKey,
+		startKey:     startKey,
 		endKey:       endKey,
 		client:       client,
 		version:      version,
-		startKey:     startKey,
+		eof:false,
 	}
+
+	// 循环获取startKeys
+	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, iterator.version), scannerNextMaxBackoff)
+	for {
+		err := iterator.getData(bo)
+		if err != nil {
+			return nil,err
+		}
+		if iterator.eof {
+			break
+		}
+	}
+
+	// 重新初始化iterator缓存
+	iterator.valid = true
+	iterator.idx = 0
+	iterator.nextStartKey = startKey
+	iterator.startKey = startKey
+	iterator.endKey = endKey
+	iterator.cache = nil
+	iterator.eof = false
+	iterator.err = nil
+
 	bool := iterator.Next()
 	if bool {
 		return iterator, nil
@@ -703,14 +727,12 @@ func (it *Iterator) Value() []byte {
 
 func (it *Iterator) Seek(key []byte) bool {
 	//TODO to check it
-	iter,err := NewIterator(key,it.endKey,0,it.client,it.version)
+	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
+	it.nextStartKey = key
+	err := it.getData(bo)
 	if err != nil {
 		return false
 	}
-	it.idx = iter.idx
-	it.cache = iter.cache
-	it.nextStartKey = iter.nextStartKey
-	it.err = iter.err
 	return true
 }
 
@@ -823,9 +845,10 @@ func (i *Iterator) getData(bo *retry.Backoffer) error {
 		}
 
 		kvPairs := cmdScanResp.Pairs
-		i.cache, i.idx = kvPairs, 0
+		i.cache, i.idx = cmdScanResp.Pairs, 0
 
-		i.startKeys = append(i.startKeys,i.nextStartKey)
+		//初始化时获取所有分组
+		//i.startKeys = append(i.startKeys,i.nextStartKey)
 
 		if len(kvPairs) < i.batchSize {
 			// No more data in current Region. Next getData() starts
