@@ -6,6 +6,8 @@ import (
 	"github.com/kjzz/client-go/config"
 	"github.com/stretchr/testify/assert"
 	"testing"
+	"strconv"
+	"time"
 )
 
 var cli *RawKVClient
@@ -14,6 +16,8 @@ type innerKV struct {
 	Key []byte
 	Val []byte
 }
+
+const pd0_addr = "172.16.3.6:2379"
 
 var expect_0_15 = []innerKV{
 	{[]byte("hyperchain-0"), []byte("zero")},
@@ -35,7 +39,7 @@ var expect_0_15 = []innerKV{
 }
 
 func init() {
-	client, err := NewRawKVClient([]string{"172.16.3.1:2379"}, config.Security{})
+	client, err := NewRawKVClient([]string{pd0_addr}, config.Security{})
 	if err != nil {
 		fmt.Println(err.Error())
 	}
@@ -43,7 +47,7 @@ func init() {
 }
 
 func TestNewRawKVClient(t *testing.T) {
-	client, err := NewRawKVClient([]string{"172.16.3.1:2379"}, config.Security{})
+	client, err := NewRawKVClient([]string{pd0_addr}, config.Security{})
 	if err != nil {
 		t.Error(err)
 	}
@@ -84,8 +88,14 @@ func TestNewIterator(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	t.Log(string(it.Key()))
 	bool := it.Next()
+	if !bool {
+		t.Error("error iter next")
+	}
+	bool = it.Next()
+	bool = it.Next()
+	bool = it.Next()
+	bool = it.Next()
 	if !bool {
 		t.Error("error iter next")
 	}
@@ -95,12 +105,180 @@ func TestNewIterator(t *testing.T) {
 		t.Error("error iter next")
 	}
 	t.Log(string(it.Key()))
-	bool = it.Next()
-	bool = it.Next()
-	bool = it.Next()
-	bool = it.Next()
-	if !bool {
-		t.Error("error iter next")
-	}
+
 	t.Log(string(it.Key()))
+}
+
+func TestBigIterator(t *testing.T)  {
+	prefix := "hpc-big_iterator_test1-"
+
+	for i:=0; i<1029; i++{
+		key := []byte(prefix+strconv.Itoa(i))
+		value := []byte(strconv.Itoa(i*1000))
+		err := cli.Put(key, value)
+		assert.NoError(t, err)
+	}
+
+	it, err := NewIterator([]byte(prefix), []byte(prefix+"a"), 0, cli, 0)
+
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	for i:=0; i<1029; i++{
+		t.Log(string(it.Key()), it.idx, i)
+		bol := it.Next()
+		if !bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+	}
+
+	for i:=0; i<3; i++{
+		t.Log(string(it.Key()), it.idx, i)
+		bol := it.Next()
+		if bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+	}
+
+	t.Log("next finish")
+
+	for i:=0; i<1029; i++{
+		t.Log(string(it.Key()), i, it.idx)
+		bol := it.Prev()
+		if !bol {
+			t.Error("error iter prev")
+		}
+	}
+
+	for i:=0; i<5; i++{
+		t.Log(string(it.Key()), i, it.idx)
+		bol := it.Prev()
+		if bol {
+			t.Error("error iter prev")
+		}
+	}
+
+}
+
+func TestBigIteratorIntegralBatch(t *testing.T)  {
+	prefix := "hpc-big_iterator_test2-"
+
+	start := time.Now()
+	for i:=0; i<1024; i++{
+		key := []byte(prefix+strconv.Itoa(i))
+		value := []byte(strconv.Itoa(i*1000))
+		err := cli.Put(key, value)
+		assert.NoError(t, err)
+	}
+	end := time.Now()
+
+	dur := end.Sub(start).Seconds()
+	t.Log(dur)
+
+	it, err := NewIterator([]byte(prefix), []byte(prefix+"a"), 0, cli, 0)
+
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	for i:=0; i<1024; i++{
+		bol := it.Next()
+		if !bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+		t.Log(string(it.Key()), it.idx, i)
+	}
+
+	for i:=0; i<3; i++{
+		t.Log(string(it.Key()), it.idx, i)
+		bol := it.Next()
+		if bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+	}
+
+	t.Log("next finish")
+
+	for i:=0; i<1024; i++{
+		bol := it.Prev()
+		if !bol {
+			t.Error("error iter prev")
+		}
+		t.Log(string(it.Key()), i, it.idx)
+	}
+
+	for i:=0; i<5; i++{
+		t.Log(string(it.Key()), i, it.idx)
+		bol := it.Prev()
+		if bol {
+			t.Error("error iter prev")
+		}
+	}
+
+}
+
+
+func TestIteratorNextAfterCrossed(t *testing.T)  {
+	prefix := "hpc-big_iterator_test3-"
+
+	start := time.Now()
+	for i:=0; i<1024; i++{
+		key := []byte(prefix+strconv.Itoa(i))
+		value := []byte(strconv.Itoa(i*1000))
+		err := cli.Put(key, value)
+		assert.NoError(t, err)
+	}
+	end := time.Now()
+
+	dur := end.Sub(start).Seconds()
+	t.Log(dur)
+
+	it, err := NewIterator([]byte(prefix), []byte(prefix+"a"), 0, cli, 0)
+
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	for i:=0; i<1024; i++{
+		bol := it.Next()
+		if !bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+		t.Log(string(it.Key()), it.idx, i)
+	}
+
+	for i:=0; i<3; i++{
+		t.Log(string(it.Key()), it.idx, i)
+		bol := it.Next()
+		if bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+	}
+
+	t.Log("next finish")
+
+	for i:=0; i<1024; i++{
+		bol := it.Prev()
+		if !bol {
+			t.Error("error iter prev")
+		}
+		t.Log(string(it.Key()), i, it.idx)
+	}
+
+	for i:=0; i<5; i++{
+		t.Log(string(it.Key()), i, it.idx)
+		bol := it.Prev()
+		if bol {
+			t.Error("error iter prev")
+		}
+	}
+
+	for i:=0; i<1024; i++{
+		bol := it.Next()
+		if !bol {
+			t.Errorf("error iter next %v %v %v %v", string(it.Key()), it.idx, string(it.endKey), i)
+		}
+		t.Log(string(it.Key()), it.idx, i)
+	}
 }
