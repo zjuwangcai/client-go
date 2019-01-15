@@ -685,6 +685,7 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, ve
 	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, iterator.version), scannerNextMaxBackoff)
 	for {
 		err := iterator.getData(bo, true)
+		iterator.idx = 0
 		if err != nil {
 			return nil, err
 		}
@@ -712,14 +713,14 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, ve
 }
 
 func (it *Iterator) Key() []byte {
-	if it.valid {
+	if it.idx<len(it.cache)  {
 		return it.cache[it.idx].Key
 	}
 	return nil
 }
 
 func (it *Iterator) Value() []byte {
-	if it.valid {
+	if it.idx<len(it.cache) {
 		return it.cache[it.idx].Value
 	}
 	return nil
@@ -733,6 +734,7 @@ func (it *Iterator) Seek(key []byte) bool {
 	if err != nil {
 		return false
 	}
+	it.idx = 0
 	return true
 }
 
@@ -753,6 +755,7 @@ func (it *Iterator) Next() bool {
 				it.Release()
 				return false
 			}
+			it.idx = 0
 			if it.idx >= len(it.cache) {
 				continue
 			}
@@ -774,21 +777,24 @@ func (it *Iterator) Next() bool {
 
 //TODO check it
 func (it *Iterator) Prev() bool {
-	if bytes.Compare(it.startKeys[0], it.Key()) == 0 {
+	if it.idx == 0 && (len(it.startKeys) <= 1 || bytes.Compare(it.Key(), it.startKeys[1]) < 0){
 		return false
+	}
+	if it.idx > len(it.cache){
+		it.idx = len(it.cache)
 	}
 	if it.idx > 0 {
 		it.idx--
 	} else {
 		i := 0
-		for i = 1; i < len(it.startKeys); i++ {
-			if bytes.Compare(it.Key(), it.startKeys[i]) == 0 {
+		for i = 1; i < len(it.startKeys)-1; i++ {
+			if bytes.Compare(it.Key(), it.startKeys[i+1]) < 0 && bytes.Compare(it.Key(), it.startKeys[i]) >= 0 {
 				it.nextStartKey = it.startKeys[i-1]
 				break
 			}
 		}
-		if i == len(it.startKeys) {
-			return false
+		if i == len(it.startKeys)-1 {
+			it.nextStartKey = it.startKeys[i-1]
 		}
 		bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
 		err := it.getData(bo, false)
@@ -845,7 +851,7 @@ func (i *Iterator) getData(bo *retry.Backoffer, init bool) error {
 		}
 
 		kvPairs := cmdScanResp.Kvs
-		i.cache, i.idx = cmdScanResp.Kvs, 0
+		i.cache = cmdScanResp.Kvs
 
 		if init {
 			//初始化时获取所有分组
