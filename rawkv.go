@@ -658,6 +658,7 @@ type Iterator struct {
 	client       *RawKVClient
 	err          error
 	startKeys    [][]byte
+	endKeys      [][]byte
 	atEnd        bool
 }
 
@@ -728,15 +729,73 @@ func (it *Iterator) Value() []byte {
 }
 
 func (it *Iterator) Seek(key []byte) bool {
-	//TODO to check it
 	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
-	it.nextStartKey = key
-	err := it.getData(bo, false)
-	if err != nil {
+	if it.startKeys == nil || len(it.startKeys) == 0{
 		return false
 	}
-	return true
+	if bytes.Compare(key, it.lastValidKey) > 0 {
+		it.Seek(it.lastValidKey)
+		return it.Next()
+	}
+	if bytes.Compare(key, it.startKeys[0]) < 0{
+		return it.Seek(it.startKeys[0])
+	}
+
+	i := 0
+	for i = 1; i < len(it.startKeys); i++{
+		if bytes.Compare(key, it.startKeys[i]) < 0{
+			if bytes.Compare(key, it.endKeys[i-1]) > 0{
+				it.nextStartKey = it.startKeys[i]
+				err := it.getData(bo, false)
+				if err != nil {
+					return false
+				}
+				return true
+			}
+			it.nextStartKey = it.startKeys[i-1]
+			err := it.getData(bo, false)
+			if err != nil {
+				return false
+			}
+			break
+		}
+	}
+	if i == len(it.startKeys){
+		it.nextStartKey = it.startKeys[i-1]
+		err := it.getData(bo, false)
+		if err != nil {
+			return false
+		}
+	}
+
+	for offset, k := range it.cache{
+		if bytes.Compare(key, k.Key) <= 0{
+			it.idx = offset
+			if it.atEnd {
+				it.unMarkAtEnd()
+			}
+			return true
+		}
+	}
+
+	return false
 }
+
+func (it *Iterator) First() bool{
+	if it.startKeys == nil || len(it.startKeys) == 0{
+		return false
+	}
+	return it.Seek(it.startKeys[0])
+}
+
+
+func (it *Iterator) Last() bool{
+	if it.lastValidKey == nil || len(it.lastValidKey) == 0{
+		return false
+	}
+	return it.Seek(it.lastValidKey)
+}
+
 
 func (it *Iterator) Next() bool {
 	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
@@ -778,7 +837,6 @@ func (it *Iterator) Next() bool {
 	}
 }
 
-//TODO check it
 func (it *Iterator) Prev() bool {
 	if it.idx == -1 {
 		return false
@@ -867,16 +925,20 @@ func (i *Iterator) getData(bo *retry.Backoffer, init bool) error {
 		if cmdScanResp == nil {
 			return errors.Trace(ErrBodyMissing)
 		}
-		if cmdScanResp.Size() == 0{
+		if cmdScanResp.Size() == 0 || len(cmdScanResp.Kvs) == 0 {
 			i.eof = true
 			return errNoMoreRequiredDataFromTikv
 		}
+		i.eof = false
+
 		kvPairs := cmdScanResp.Kvs
 		i.cache, i.idx = cmdScanResp.Kvs, 0
 
 		if init {
 			//初始化时获取所有分组
 			i.startKeys = append(i.startKeys, kvPairs[0].Key)
+			i.endKeys = append(i.endKeys, kvPairs[len(kvPairs)-1].Key)
+			i.lastValidKey = kvPairs[len(kvPairs)-1].Key
 		}
 
 		if len(kvPairs) < i.batchSize {
