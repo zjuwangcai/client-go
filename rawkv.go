@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/pd/client"
+	"fmt"
 )
 
 var ErrInitIterator = errors.New("failed to init iterator")
@@ -880,6 +881,75 @@ func (c *RawKVClient) getTimestamp(ctx context.Context) (uint64, error) {
 	return ComposeTS(physical, logical), nil
 }
 
+
+// NewBatch returns a Batch instance.
+func (c *RawKVClient)  NewBatch() Batch {
+	return &tikvBatch{
+		db: c,
+	}
+}
+
 func ComposeTS(physical, logical int64) uint64 {
 	return uint64((physical << physicalShiftBits) + logical)
+}
+
+// TiKV Batch
+type Batch interface {
+	Put(key, value []byte) error
+	Delete(key []byte) error
+	Write() error
+	Len() int
+}
+
+type KeyValuePair struct {
+	Key   []byte
+	Value []byte
+}
+
+// tikvBatch implements the Batch interface.
+type tikvBatch struct {
+	db     *RawKVClient
+	keys   [][]byte
+	values [][]byte
+}
+
+// Put appends 'put operation' of the given K/V pair to the batch.
+func (b *tikvBatch) Put(key, value []byte) error {
+	b.keys = append(b.keys, key)
+	b.values = append(b.values, value)
+	return nil
+}
+
+// TODO check it
+// Delete appends 'delete operation' of the given key to the batch.
+func (b *tikvBatch) Delete(key []byte) error {
+	for i := 0; i < len(b.keys); i++ {
+		if bytes.Compare(key, b.keys[i]) == 0 {
+			b.keys = append(b.keys[:i], b.keys[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("this key does not exist in the batch")
+}
+
+// Write apply the given batch to the DB.
+func (b *tikvBatch) Write() error {
+	if b.db == nil {
+		panic(fmt.Errorf("no db specified"))
+	}
+	return b.db.BatchPut(b.keys, b.values)
+}
+
+// Len returns number of records in the batch.
+func (b *tikvBatch) Len() int {
+	return len(b.keys)
+}
+
+func (b *tikvBatch) Parse() []KeyValuePair {
+	kv := make([]KeyValuePair, len(b.keys))
+	for i := 0; i < len(b.keys); i++ {
+		kv[i].Key = b.keys[i]
+		kv[i].Value = b.values[i]
+	}
+	return kv
 }
