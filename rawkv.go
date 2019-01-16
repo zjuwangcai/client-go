@@ -653,10 +653,12 @@ type Iterator struct {
 	nextStartKey []byte
 	startKey     []byte
 	endKey       []byte
+	lastValidKey []byte
 	eof          bool
 	client       *RawKVClient
 	err          error
 	startKeys    [][]byte
+	atEnd        bool
 }
 
 func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, version uint64) (*Iterator, error) {
@@ -687,6 +689,9 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, ve
 	for {
 		err := iterator.getData(bo, true)
 		if err != nil {
+			if err == errNoMoreRequiredDataFromTikv{
+				break
+			}
 			return nil, err
 		}
 		if iterator.eof {
@@ -696,7 +701,7 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, ve
 
 	// 重新初始化iterator缓存
 	iterator.valid = true
-	iterator.idx = 0
+	iterator.idx = -1
 	iterator.nextStartKey = startKey
 	iterator.startKey = startKey
 	iterator.endKey = endKey
@@ -704,23 +709,19 @@ func NewIterator(startKey, endKey []byte, batchSize int, client *RawKVClient, ve
 	iterator.eof = false
 	iterator.err = nil
 
-	bool := iterator.Next()
-	if bool {
-		return iterator, nil
-	}
-	return iterator, ErrInitIterator
+	return iterator, nil
 
 }
 
 func (it *Iterator) Key() []byte {
-	if it.valid {
+	if it.idx<len(it.cache) && it.idx >= 0 && it.valid && !it.atEnd {
 		return it.cache[it.idx].Key
 	}
 	return nil
 }
 
 func (it *Iterator) Value() []byte {
-	if it.valid {
+	if it.idx<len(it.cache) && it.idx >= 0 && it.valid && !it.atEnd {
 		return it.cache[it.idx].Value
 	}
 	return nil
@@ -739,19 +740,23 @@ func (it *Iterator) Seek(key []byte) bool {
 
 func (it *Iterator) Next() bool {
 	bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
-	if !it.valid {
+	if !it.valid || it.atEnd {
 		return false
 	}
 	for {
 		it.idx++
 		if it.idx >= len(it.cache) {
 			if it.eof {
-				it.Release()
-				return true
+				it.markAtEnd()
+				return false
 			}
 			err := it.getData(bo, false)
 			if err != nil {
-				it.Release()
+				if err == errNoMoreRequiredDataFromTikv {
+					it.markAtEnd()
+				} else {
+					it.Release()
+				}
 				return false
 			}
 			if it.idx >= len(it.cache) {
@@ -775,10 +780,18 @@ func (it *Iterator) Next() bool {
 
 //TODO check it
 func (it *Iterator) Prev() bool {
-	if bytes.Compare(it.startKeys[0], it.Key()) == 0 {
+	if it.idx == -1 {
 		return false
 	}
+	if it.idx == 0 && (len(it.startKeys) <= 1 || bytes.Compare(it.Key(), it.startKeys[0]) <= 0){
+		it.idx = -1
+		return false
+	}
+	if it.idx >= len(it.cache){
+		it.idx = len(it.cache)
+	}
 	if it.idx > 0 {
+		it.unMarkAtEnd()
 		it.idx--
 	} else {
 		i := 0
@@ -791,12 +804,15 @@ func (it *Iterator) Prev() bool {
 		if i == len(it.startKeys) {
 			return false
 		}
+
 		bo := retry.NewBackoffer(context.WithValue(context.Background(), txnStartKey, it.version), scannerNextMaxBackoff)
 		err := it.getData(bo, false)
 		if err != nil {
 			return false
 		}
 		it.idx = len(it.cache) - 1
+		it.eof = false
+		it.unMarkAtEnd()
 	}
 	return true
 }
@@ -807,6 +823,13 @@ func (i *Iterator) Error() error {
 
 func (i *Iterator) Release() {
 	i.valid = false
+}
+
+func (i *Iterator) markAtEnd()  {
+	i.atEnd = true
+}
+func (i *Iterator) unMarkAtEnd()  {
+	i.atEnd = false
 }
 
 func (i *Iterator) getData(bo *retry.Backoffer, init bool) error {
@@ -844,14 +867,18 @@ func (i *Iterator) getData(bo *retry.Backoffer, init bool) error {
 		if cmdScanResp == nil {
 			return errors.Trace(ErrBodyMissing)
 		}
-
+		if cmdScanResp.Size() == 0{
+			i.eof = true
+			return errNoMoreRequiredDataFromTikv
+		}
 		kvPairs := cmdScanResp.Kvs
 		i.cache, i.idx = cmdScanResp.Kvs, 0
 
 		if init {
 			//初始化时获取所有分组
-			i.startKeys = append(i.startKeys, i.nextStartKey)
+			i.startKeys = append(i.startKeys, kvPairs[0].Key)
 		}
+
 		if len(kvPairs) < i.batchSize {
 			// No more data in current Region. Next getData() starts
 			// from current Region's endKey.
