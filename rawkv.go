@@ -206,11 +206,6 @@ func (c *RawKVClient) BatchPut(keys, values [][]byte) error {
 	if len(keys) != len(values) {
 		return errors.New("the len of keys is not equal to the len of values")
 	}
-	for _, value := range values {
-		if len(value) == 0 {
-			return errors.New("empty value is not supported")
-		}
-	}
 	bo := retry.NewBackoffer(context.Background(), rawkvMaxBackoff)
 	err := c.sendBatchPut(bo, keys, values)
 	return errors.Trace(err)
