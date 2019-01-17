@@ -1018,7 +1018,7 @@ func (b *tikvBatch) Delete(key []byte) error {
 			return nil
 		}
 	}
-	return errors.New("this key does not exist in the batch")
+	return nil
 }
 
 // Write apply the given batch to the DB.
