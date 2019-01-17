@@ -6,8 +6,8 @@ import (
 	"github.com/kjzz/client-go/config"
 	"github.com/stretchr/testify/assert"
 	"testing"
-	"strconv"
 	"time"
+	"strconv"
 )
 
 var cli *RawKVClient
@@ -88,25 +88,18 @@ func TestNewIterator(t *testing.T) {
 	if err != nil {
 		t.Error(err.Error())
 	}
-	bool := it.Next()
-	if !bool {
-		t.Error("error iter next")
-	}
-	bool = it.Next()
-	bool = it.Next()
-	bool = it.Next()
-	bool = it.Next()
-	if !bool {
-		t.Error("error iter next")
-	}
-	t.Log(string(it.Key()))
-	bool = it.Prev()
-	if !bool {
-		t.Error("error iter next")
-	}
-	t.Log(string(it.Key()))
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Key(), []byte("hyperchain-10"))
 
-	t.Log(string(it.Key()))
+	assert.Equal(t, it.Prev(), true)
+	assert.Equal(t, it.Key(), []byte("hyperchain-1"))
+
+	assert.Equal(t, it.First(), true)
+	assert.Equal(t, it.Key(), []byte("hyperchain-0"))
+	assert.Equal(t, it.Last(), true)
+	assert.Equal(t, it.Key(), []byte("hyperchain-9"))
 }
 
 func TestBigIterator(t *testing.T)  {
@@ -281,4 +274,72 @@ func TestIteratorNextAfterCrossed(t *testing.T)  {
 		}
 		t.Log(string(it.Key()), it.idx, i)
 	}
+}
+
+func TestIteratorSeek(t *testing.T)  {
+	prefix := "hpc-big_iterator_test5-"
+
+	start := time.Now()
+	for i:=1; i<100; i++{
+		if i!= 55 {
+			key := []byte(prefix + strconv.Itoa(i))
+			value := []byte(strconv.Itoa(i * 1000))
+			err := cli.Put(key, value)
+			assert.NoError(t, err)
+		}
+	}
+	end := time.Now()
+
+	dur := end.Sub(start).Seconds()
+	t.Log(dur)
+
+	it, err := NewIterator([]byte(prefix), []byte(prefix+"a"), 0, cli, 0)
+
+	if err != nil {
+		t.Error(err.Error())
+	}
+
+	assert.Equal(t, it.Seek([]byte(prefix+"99")), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"99"))
+	assert.Equal(t, it.Next(), false)
+	assert.Equal(t, it.Prev(), true)
+	assert.Equal(t, it.Prev(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"98"))
+
+	assert.Equal(t, it.Seek([]byte(prefix+"1")), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"1"))
+	assert.Equal(t, it.Prev(), false)
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"10"))
+
+	assert.Equal(t, it.Seek([]byte(prefix+"55")), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"56"))
+	assert.Equal(t, it.Prev(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"54"))
+
+	assert.Equal(t, it.Seek([]byte(prefix+"999")), false)
+	assert.Equal(t, it.Prev(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"99"))
+
+	assert.Equal(t, it.Seek([]byte(prefix+"0")), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"1"))
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"10"))
+
+
+	assert.Equal(t, it.Seek([]byte(prefix+"55")), true)
+	for it.Next(){
+		t.Log("it key next :", string(it.Key()))
+	}
+	assert.Equal(t, it.Prev(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"99"))
+
+	assert.Equal(t, it.Seek([]byte(prefix+"55")), true)
+	for it.Prev(){
+		t.Log("it key prev :", string(it.Key()))
+	}
+	assert.Equal(t, it.Next(), true)
+	assert.Equal(t, it.Key(), []byte(prefix+"1"))
+
 }
