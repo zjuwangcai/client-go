@@ -171,10 +171,6 @@ func (c *RawKVClient) Put(key, value []byte) error {
 	metrics.RawkvSizeHistogram.WithLabelValues("key").Observe(float64(len(key)))
 	metrics.RawkvSizeHistogram.WithLabelValues("value").Observe(float64(len(value)))
 
-	if len(value) == 0 {
-		return errors.New("empty value is not supported")
-	}
-
 	req := &rpc.Request{
 		Type: rpc.CmdRawPut,
 		RawPut: &kvrpcpb.RawPutRequest{
