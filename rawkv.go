@@ -624,6 +624,13 @@ func (c *RawKVClient) doBatchPut(bo *retry.Backoffer, batch batch) error {
 	return nil
 }
 
+func (c *RawKVClient) NewIterator(startKey, endKey []byte, batchSize int, version uint64) (*Iterator, error){
+	if c == nil {
+		return nil, errNilClient
+	}
+	return NewIterator(startKey, endKey, batchSize, c, version)
+}
+
 type batch struct {
 	regionID locate.RegionVerID
 	keys     [][]byte
